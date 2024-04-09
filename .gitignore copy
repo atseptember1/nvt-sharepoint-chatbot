@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+.vscode/
+.env
+*.log
+.deployment
+.env_old
+env.json
+.deployment
+.idea
+.venv
+env-bak*
+.temp
