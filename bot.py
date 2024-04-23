@@ -6,18 +6,19 @@ import re
 import asyncio
 import random
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor
 
-from langchain.chat_models import AzureChatOpenAI
-from langchain.utilities import BingSearchAPIWrapper
+from langchain.chat_models.azure_openai import AzureChatOpenAI
+# from langchain.utilities import BingSearchAPIWrapper
 from langchain.memory import ConversationBufferWindowMemory
 from langchain.memory import CosmosDBChatMessageHistory
-from langchain.agents import ConversationalChatAgent, AgentExecutor, Tool
+# from langchain.agents import ConversationalChatAgent, AgentExecutor, Tool
 from typing import Any, Dict, List, Optional, Union
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.manager import CallbackManager
 from langchain.schema import AgentAction, AgentFinish, LLMResult
-from langchain.embeddings import OpenAIEmbeddings
+from langchain.embeddings.azure_openai import AzureOpenAIEmbeddings
 
 # custom libraries that we will use later in the app
 from utils import DocSearchTool, CSVTabularTool, SQLDbTool, ChatGPTTool, BingSearchTool, run_agent
@@ -38,12 +39,9 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(levelname)s] -
 # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 
 # Env variables needed by langchain
-os.environ["OPENAI_API_BASE"] = os.environ.get("AZURE_OPENAI_ENDPOINT")
-os.environ["OPENAI_API_KEY"] = os.environ.get("AZURE_OPENAI_API_KEY")
 os.environ["OPENAI_API_VERSION"] = os.environ.get("AZURE_OPENAI_API_VERSION")
-os.environ["OPENAI_API_TYPE"] = "azure"
+aoai_api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
 tenant_id = os.environ.get("AZURE_TENANT_ID")
-gpt_model = os.environ.get("AZURE_OPENAI_MODEL_NAME")
 completion_tokens = int(os.environ.get("AZURE_OPENAI_COMPLETION_TOKEN"))
 answer_language = os.environ.get("ANSWER_LANGUAGE")
 
@@ -76,10 +74,33 @@ class BotServiceCallbackHandler(BaseCallbackHandler):
 class MyBot(ActivityHandler):
 
     def __init__(self):
-        self.model_name = os.environ.get("AZURE_OPENAI_MODEL_NAME")
+        self.aoai_resources: list = json.loads(os.environ.get("AUZRE_OPENAI_RESOURCES"))
+        self.llms_preconf: list[AzureChatOpenAI] = []
+        self.embed_llms: list[AzureOpenAIEmbeddings] = []
+        if self.aoai_resources is not None:
+            for resource in self.aoai_resources:
+                if resource["model_name"].startswith("gpt"):
+                    self.llms_preconf.append(AzureChatOpenAI(
+                        openai_api_type="azure",
+                        openai_api_base=resource["endpoint"],
+                        openai_api_key=resource["key"],
+                        openai_api_version=aoai_api_version,
+                        deployment_name=resource["deployment_name"],
+                        temperature=0.5,
+                        max_tokens=completion_tokens
+                    ))
+                if resource["model_name"] == "embed":
+                    self.embed_llms.append(AzureOpenAIEmbeddings(
+                        openai_api_type="azure",
+                        openai_api_base=resource["endpoint"],
+                        openai_api_key=resource["key"],
+                        openai_api_version=aoai_api_version,
+                        deployment=resource["deployment_name"],
+                        chunk_size=1
+                    ))
+        self.llms_postconf: list[AzureChatOpenAI] = []
 
-        # Function to show welcome message to new users
-
+    # Function to show welcome message to new users
     async def on_members_added_activity(self, members_added: ChannelAccount, turn_context: TurnContext):
         for member_added in members_added:
             if member_added.id != turn_context.activity.recipient.id:
@@ -87,25 +108,20 @@ class MyBot(ActivityHandler):
 
     # See https://aka.ms/about-bot-activity-message to learn more about the message and other activity types.
     async def on_message_activity(self, turn_context: TurnContext):
-        logging.info(
-            "---------------------------------------------- TURN BEGINNS ----------------------------------------------")
+        logging.info("-------------------------------------------- TURN BEGINNS --------------------------------------------")
         # Extract info from TurnContext - You can change this to whatever , this is just one option
         session_id = turn_context.activity.conversation.id
         user_id = turn_context.activity.from_property.id + "-" + turn_context.activity.channel_id
         user_aad_id = turn_context.activity.from_property.aad_object_id
         user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
-        logging.info("Get user informaiton from activity")
-        logging.debug(
-            f"User information: user_id: {user_id}, user_aad_id: {user_aad_id}, user_tenant_id: {user_tenant_id}")
-
         input_text_metadata = dict()
         try:
             input_text_metadata["local_timestamp"] = turn_context.activity.local_timestamp.strftime(
                 "%I:%M:%S %p, %A, %B %d of %Y")
             input_text_metadata["local_timezone"] = turn_context.activity.local_timezone
             input_text_metadata["locale"] = turn_context.activity.locale
-        except Exception as e:
-            logging.error(e)
+        except Exception as err:
+            logging.error(err)
 
         if user_tenant_id != tenant_id:
             logging.debug(f"User {user_id} is in tenant {user_tenant_id} not in {tenant_id}")
@@ -121,9 +137,12 @@ class MyBot(ActivityHandler):
             cb_manager = CallbackManager(handlers=[cb_handler])
 
             # Set LLM
-            llm = AzureChatOpenAI(deployment_name=self.model_name, temperature=0.5, max_tokens=completion_tokens,
-                                  callback_manager=cb_manager)
-            embedder = OpenAIEmbeddings(deployment="text-embedding-ada-002", chunk_size=1)
+            for l in self.llms_preconf:
+                l.callback_manager = cb_manager
+                self.llms_postconf.append(l)
+
+            llm = self.llms_postconf[0].with_fallbacks(self.llms_postconf[1:])
+            embedder = self.embed_llms[0]  # TODO: this should utilize fallback for AzureOpenAIEmbeddings
 
             # Set brain Agent with persisten memory in CosmosDB
             cosmos = CosmosDBChatMessageHistory(
@@ -181,7 +200,7 @@ class MyBot(ActivityHandler):
                                                 top_docs,
                                                 input_text,
                                                 answer_language,
-                                                gpt_model,
+                                                "gpt-35-turbo-16k",  # TODO: find a way to set this dynamically
                                                 completion_tokens,
                                                 memory,
                                                 None)
