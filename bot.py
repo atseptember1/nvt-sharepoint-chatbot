@@ -1,19 +1,15 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 import os
-import sys
-import re
 import asyncio
-import random
+import time
 import logging
 import json
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain.chat_models.azure_openai import AzureChatOpenAI
-# from langchain.utilities import BingSearchAPIWrapper
 from langchain.memory import ConversationBufferWindowMemory
 from langchain.memory import CosmosDBChatMessageHistory
-# from langchain.agents import ConversationalChatAgent, AgentExecutor, Tool
 from typing import Any, Dict, List, Optional, Union
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.manager import CallbackManager
@@ -44,6 +40,13 @@ aoai_api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
 tenant_id = os.environ.get("AZURE_TENANT_ID")
 completion_tokens = int(os.environ.get("AZURE_OPENAI_COMPLETION_TOKEN"))
 answer_language = os.environ.get("ANSWER_LANGUAGE")
+
+enable_site_id = os.environ.get("ENABLE_SITE_ID")
+logging.info(f"ENABLE_SITE_ID is set to: {str(enable_site_id)}")
+if enable_site_id is None or enable_site_id.lower() == "":
+    logging.info("ENABLE_SITE_ID is not set, defaulting to True")
+    enable_site_id = True
+
 
 logging.debug(f'AZURE_OPENAI_ENDPOINT: {os.environ.get("AZURE_OPENAI_ENDPOINT")}')
 logging.debug(f'AZURE_OPENAI_API_KEY: {os.environ.get("AZURE_OPENAI_API_KEY")}')
@@ -113,7 +116,12 @@ class MyBot(ActivityHandler):
         session_id = turn_context.activity.conversation.id
         user_id = turn_context.activity.from_property.id + "-" + turn_context.activity.channel_id
         user_aad_id = turn_context.activity.from_property.aad_object_id
-        user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
+        try:
+            user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
+        except KeyError as kerr:
+            logging.error(kerr)
+            user_tenant_id = None
+
         input_text_metadata = dict()
         try:
             input_text_metadata["local_timestamp"] = turn_context.activity.local_timestamp.strftime(
@@ -123,7 +131,7 @@ class MyBot(ActivityHandler):
         except Exception as err:
             logging.error(err)
 
-        if user_tenant_id != tenant_id:
+        if user_tenant_id != tenant_id and tenant_id is not None:
             logging.debug(f"User {user_id} is in tenant {user_tenant_id} not in {tenant_id}")
             await turn_context.send_activity("Sorry, I can only talk to people in the same tenant.")
         else:
@@ -162,7 +170,7 @@ class MyBot(ActivityHandler):
             # get user Sharepoint site list
             vector_indexes = [os.environ["AZURE_SEARCH_INDEX"]]
             similarity_k = 3  # top results from multi-vector-index similarity search
-            if user_aad_id:
+            if user_aad_id and enable_site_id:
                 site_list = get_user_site_list(user_aad_id)
                 site_id_list = extract_site_list_id(site_list)
                 logging.debug(f"User site list: {site_id_list}")
