@@ -303,39 +303,31 @@ def get_search_results(query: str, indexes: list,
             "queryType": "semantic",
             "semanticConfiguration": "my-semantic-config",
             "count": "true",
-            # "speller": "lexicon",
-            # "queryLanguage": "en-us",
             "captions": "extractive",
             "answers": "extractive",
             "top": k
         }
         if site_ids:
-            # filter_query = "metadata_spo_site_id, '"
-            # filter_query = "metadata_spo_site_id eq "
             filter_query = ""
-            for id in site_ids:
-                if id == site_ids[-1]:
-                    filter_query = filter_query + f"metadata_spo_site_id eq '{id}'"
+            for site_id in site_ids:
+                if site_id == site_ids[-1]:
+                    filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}'"
                 else:
-                    filter_query = filter_query + f"metadata_spo_site_id eq '{id}' or "
-            # search_payload["filter"]= f"search.in({filter_query})"
+                    filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}' or "
             search_payload["filter"] = filter_query
         else:
             filter_query = "metadata_spo_site_id eq ''"
             search_payload["filter"] = filter_query
-        logging.debug(search_payload["filter"])
         logging.debug(f"search payload: {search_payload}")
         if vector_search:
-            # search_payload["vectors"]= [{"value": query_vector, "fields": "chunkVector","k": k}]
             search_payload["vectorQueries"] = [
                 {"kind": "vector", "vector": query_vector, "fields": "chunkVector", "k": k}]
-            # search_payload["select"]= "id, title, chunk, name, location"
             search_payload["select"] = "id, title, chunk, location"
         else:
             search_payload["select"] = "id, title, chunks, name, location, vectorized"
 
         url = os.environ['AZURE_SEARCH_ENDPOINT'] + "/indexes/" + index + "/docs/search"
-        resp = requests.post(url, data=json.dumps(search_payload), headers=headers, params=params)
+        resp = requests.post(url, data=json.dumps(search_payload), headers=headers, params=params, timeout=20)
         resp.raise_for_status()
 
         search_results = resp.json()
@@ -350,7 +342,6 @@ def get_search_results(query: str, indexes: list,
                     '@search.rerankerScore'] > reranker_threshold:  # Show results that are at least N% of the max possible score=4
                 content[result['id']] = {
                     "title": result['title'],
-                    # "name": result['name'],
                     "location": result['location'],
                     "caption": result['@search.captions'][0]['text'],
                     "index": index
@@ -371,8 +362,8 @@ def get_search_results(query: str, indexes: list,
         topk = k * len(indexes)
 
     count = 0  # To keep track of the number of results added
-    for id in sorted(content, key=lambda x: content[x]["score"], reverse=True):
-        ordered_content[id] = content[id]
+    for site_id in sorted(content, key=lambda x: content[x]["score"], reverse=True):
+        ordered_content[site_id] = content[site_id]
         count += 1
         if count >= topk:  # Stop after adding 5 results
             break
