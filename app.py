@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
-
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -17,14 +17,35 @@ from botbuilder.core import (
 from botbuilder.core.integration import aiohttp_error_middleware
 from botbuilder.schema import Activity, ActivityTypes
 
+from azure.monitor.opentelemetry import configure_azure_monitor
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+)
 from bot import MyBot
 from config import DefaultConfig
 
 
 CONFIG = DefaultConfig()
-# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(levelname)s] - %(message)s',
-                    datefmt='%d-%b-%y %H:%M:%S', filename="./app.log")
+provider = TracerProvider()
+processor = BatchSpanProcessor(ConsoleSpanExporter())
+provider.add_span_processor(processor)
+
+# Sets the global default tracer provider
+trace.set_tracer_provider(provider)
+
+# Creates a tracer from the global tracer provider
+tracer = trace.get_tracer(__name__)
+
+configure_azure_monitor(
+    instrumentation_key=os.environ.get("APPINSIGHTS_INSTRUMENTATIONKEY")
+)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
 
 # Create adapter.
 # See https://aka.ms/about-bot-adapter to learn more about how bots work.
@@ -34,25 +55,22 @@ ADAPTER = BotFrameworkAdapter(SETTINGS)
 
 # Catch-all for errors.
 async def on_error(context: TurnContext, error: Exception):
-    logging.error("Unhandled error occurred", exc_info=True)
+    logging.error(f"Unhandled error occurred: {error}", exc_info=True)
     # This check writes out errors to console log .vs. app insights.
     # NOTE: In production environment, you should consider logging this to Azure
     #       application insights.
-    print(f"\n [on_turn_error] unhandled error: {error}", file=sys.stderr)
     traceback.print_exc()
 
     # Send a message to the user
     await context.send_activity("The bot encountered an error or bug.")
-    await context.send_activity(
-        "To continue to run this bot, please fix the bot source code."
-    )
+    await context.send_activity("To continue to run this bot, please fix the bot source code.")
     # Send a trace activity if we're talking to the Bot Framework Emulator
     if context.activity.channel_id == "emulator":
         # Create a trace activity that contains the error object
         trace_activity = Activity(
             label="TurnError",
             name="on_turn_error Trace",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(datetime.timezone.utc),
             type=ActivityTypes.trace,
             value=f"{error}",
             value_type="https://www.botframework.com/schemas/error",
@@ -63,36 +81,31 @@ async def on_error(context: TurnContext, error: Exception):
 
 ADAPTER.on_turn_error = on_error
 
-logging.info("Initializing Bot...")
 # Create the Bot
 BOT = MyBot()
-logging.info("Bot initialized.")
 
 
 # Listen for incoming requests on /api/messages
 async def messages(req: Request) -> Response:
-    logging.info("Request received")
     # Main bot message handler.
-    if "application/json" in req.headers["Content-Type"]:
-        body = await req.json()
-    else:
-        return Response(status=415)
+    with tracer.start_as_current_span("BotFrameworkAdapter.process_activity"):
+        if "application/json" in req.headers["Content-Type"]:
+            body = await req.json()
+        else:
+            return Response(status=415)
 
-    activity = Activity().deserialize(body)
-    auth_header = req.headers["Authorization"] if "Authorization" in req.headers else ""
-    logging.info("Received activity: %s", activity)
-    response = await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
-    if response:
-        logging.info("Return response")
-        logging.debug("response body: %r", response.body)
-        return json_response(data=response.body, status=response.status)
-    return Response(status=201)
+        activity = Activity().deserialize(body)
+        auth_header = req.headers["Authorization"] if "Authorization" in req.headers else ""
+        logger.info("Received activity: %s", activity)
+        response = await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
+        if response:
+            logger.info("Return response body: %r", response.body)
+            return json_response(data=response.body, status=response.status)
+        return Response(status=201)
 
 
-logging.info("Setting up App...")
 APP = web.Application(middlewares=[aiohttp_error_middleware])
 APP.router.add_post("/api/messages", messages)
-logging.info("App setup complete.")
 
 
 if __name__ == "__main__":

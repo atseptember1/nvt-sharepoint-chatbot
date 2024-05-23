@@ -18,6 +18,8 @@ from pypdf import PdfReader, PdfWriter
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 
+from azure.monitor.opentelemetry import configure_azure_monitor
+
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.docstore.document import Document
 from langchain.llms import AzureOpenAI
@@ -47,9 +49,10 @@ from langchain.agents import create_sql_agent
 from langchain.agents.agent_toolkits import SQLDatabaseToolkit
 from langchain.callbacks.base import BaseCallbackManager
 
-
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(levelname)s] - %(message)s',
-                    datefmt='%d-%b-%y %H:%M:%S', filename="./app.log")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
 
 try:
     from prompts import (COMBINE_QUESTION_PROMPT, COMBINE_PROMPT, COMBINE_CHAT_PROMPT,
@@ -291,13 +294,14 @@ def get_search_results(query: str, indexes: list,
                        vector_search: bool = False,
                        similarity_k: int = 3,
                        query_vector: list = [],
-                       site_ids: list = None) -> List[dict]:
+                       site_ids: list = None, enable_site_id=True) -> List[dict]:
     headers = {'Content-Type': 'application/json', 'api-key': os.environ["AZURE_SEARCH_KEY"]}
     params = {'api-version': os.environ['AZURE_SEARCH_API_VERSION']}
 
     agg_search_results = dict()
 
     for index in indexes:
+        # construct search payload
         search_payload = {
             "search": query,
             "queryType": "semantic",
@@ -307,24 +311,29 @@ def get_search_results(query: str, indexes: list,
             "answers": "extractive",
             "top": k
         }
-        if site_ids:
-            filter_query = ""
-            for site_id in site_ids:
-                if site_id == site_ids[-1]:
-                    filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}'"
-                else:
-                    filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}' or "
-            search_payload["filter"] = filter_query
-        else:
-            filter_query = "metadata_spo_site_id eq ''"
-            search_payload["filter"] = filter_query
-        logging.debug(f"search payload: {search_payload}")
+        log_search_payload = search_payload.copy()
+        if enable_site_id:
+            if site_ids:
+                filter_query = ""
+                for site_id in site_ids:
+                    if site_id == site_ids[-1]:
+                        filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}'"
+                    else:
+                        filter_query = filter_query + f"metadata_spo_site_id eq '{site_id}' or "
+                search_payload["filter"] = filter_query
+            else:
+                filter_query = "metadata_spo_site_id eq ''"
+                search_payload["filter"] = filter_query
         if vector_search:
             search_payload["vectorQueries"] = [
                 {"kind": "vector", "vector": query_vector, "fields": "chunkVector", "k": k}]
             search_payload["select"] = "id, title, chunk, location"
+            log_search_payload["vectorQuery"] = True
         else:
             search_payload["select"] = "id, title, chunks, name, location, vectorized"
+
+        log_search_payload["select"] = search_payload["select"]
+        logger.debug(f"search payload: {log_search_payload}", extra=log_search_payload)
 
         url = os.environ['AZURE_SEARCH_ENDPOINT'] + "/indexes/" + index + "/docs/search"
         resp = requests.post(url, data=json.dumps(search_payload), headers=headers, params=params, timeout=20)
@@ -477,6 +486,7 @@ def get_answer_customized(llm: AzureChatOpenAI,
                           memory: ConversationBufferMemory = None,
                           callback_manager: BaseCallbackManager = None) -> Dict[str, Any]:
     """Gets an answer to a question from a list of Documents."""
+    answer_started = time.time()
 
     # Test if the stuff method exceeds token limits
     chain_type = "stuff"
@@ -491,7 +501,6 @@ def get_answer_customized(llm: AzureChatOpenAI,
     tokens_limit = model_tokens_limit(model)
 
     payload = {"input_documents": docs, "question": query, "language": language}
-
     if (prompt_token + completion_tokens) > 0.9 * tokens_limit:
         chain_type = "map_reduce"
         chain = load_qa_with_sources_chain(llm, chain_type=chain_type,
@@ -501,9 +510,35 @@ def get_answer_customized(llm: AzureChatOpenAI,
                                            callback_manager=callback_manager)
         payload.update({"token_max": 16000})
 
-    print(f"------------------------------------ {chain_type} ------------------------------------")
+    print(f"--- {chain_type} ---")
 
+    # Log number of tokens used for documents, memory, prompt, and completion tokens
     answer = chain(inputs=payload, return_only_outputs=True)
+    answer_ended = time.time()
+    duration = answer_ended - answer_started
+
+    doc_token = num_tokens_from_docs(docs)
+    memory_token = num_tokens_from_string(memory.buffer_as_str)
+    token_count = {
+        "duration": duration,
+        "start_time": answer_started,
+        "end_time": answer_ended,
+        "num_docs_tokens": doc_token,
+        "num_memory_tokens": memory_token,
+        "num_base_prompt_tokens": prompt_token - (doc_token + memory_token),
+        "num_combined_prompt_tokens": prompt_token,
+        "num_completion_tokens": num_tokens_from_string(answer["output_text"])
+    }
+    logger.debug(f"Token count: {token_count}", extra=token_count)
+
+    log_bot_answer = {
+        "user_input": query,
+        "bot_output": answer["output_text"],
+        "duration": duration,
+        "start_time": answer_started,
+        "end_time": answer_ended
+    }
+    logger.debug(f"Bot Answer: {log_bot_answer}", extra=log_bot_answer)
 
     return answer
 

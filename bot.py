@@ -30,9 +30,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(levelname)s] - %(message)s',
-                    datefmt='%d-%b-%y %H:%M:%S', filename="./app.log")
-# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
 
 # Env variables needed by langchain
 os.environ["OPENAI_API_VERSION"] = os.environ.get("AZURE_OPENAI_API_VERSION")
@@ -42,15 +43,14 @@ completion_tokens = int(os.environ.get("AZURE_OPENAI_COMPLETION_TOKEN"))
 answer_language = os.environ.get("ANSWER_LANGUAGE")
 
 enable_site_id = os.environ.get("ENABLE_SITE_ID")
-logging.info(f"ENABLE_SITE_ID is set to: {str(enable_site_id)}")
-if enable_site_id is None or enable_site_id.lower() == "":
-    logging.info("ENABLE_SITE_ID is not set, defaulting to True")
+logger.debug(f"ENABLE_SITE_ID is set to: {str(enable_site_id)}")
+if enable_site_id.lower() == "true":
     enable_site_id = True
-
-
-logging.debug(f'AZURE_OPENAI_ENDPOINT: {os.environ.get("AZURE_OPENAI_ENDPOINT")}')
-logging.debug(f'AZURE_OPENAI_API_KEY: {os.environ.get("AZURE_OPENAI_API_KEY")}')
-logging.debug(f'AZURE_OPENAI_MODEL_NAME: {os.environ.get("AZURE_OPENAI_MODEL_NAME")}')
+if enable_site_id is None or enable_site_id.lower() == "":
+    logger.debug("ENABLE_SITE_ID is not set, defaulting to True")
+    enable_site_id = True
+else:
+    enable_site_id = False
 
 
 # Callback hanlder used for the bot service to inform the client of the thought process before the final response
@@ -111,16 +111,25 @@ class MyBot(ActivityHandler):
 
     # See https://aka.ms/about-bot-activity-message to learn more about the message and other activity types.
     async def on_message_activity(self, turn_context: TurnContext):
-        logging.info("-------------------------------------------- TURN BEGINNS --------------------------------------------")
+        turn_start_time = time.time()
+        print("--- TURN BEGINNS ---")
+
         # Extract info from TurnContext - You can change this to whatever , this is just one option
         session_id = turn_context.activity.conversation.id
-        user_id = turn_context.activity.from_property.id + "-" + turn_context.activity.channel_id
-        user_aad_id = turn_context.activity.from_property.aad_object_id
         try:
             user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
         except KeyError as kerr:
-            logging.error(kerr)
-            user_tenant_id = None
+            logger.warning(f"user_tenant_id not found in channel_data: {kerr}")
+            user_tenant_id = ""
+        user_aad_id = turn_context.activity.from_property.aad_object_id
+        if user_aad_id is None:
+            user_aad_id = ""
+        user_information = {
+            "user_aad_id": user_aad_id,
+            "user_id": turn_context.activity.from_property.id + "-" + turn_context.activity.channel_id,
+            "tenant_id": user_tenant_id
+        }
+        logger.debug(f"User AAD information: {user_information}", extra=user_information)
 
         input_text_metadata = dict()
         try:
@@ -129,16 +138,17 @@ class MyBot(ActivityHandler):
             input_text_metadata["local_timezone"] = turn_context.activity.local_timezone
             input_text_metadata["locale"] = turn_context.activity.locale
         except Exception as err:
-            logging.error(err)
+            logger.error(err)
 
         if user_tenant_id != tenant_id and tenant_id is not None:
-            logging.debug(f"User {user_id} is in tenant {user_tenant_id} not in {tenant_id}")
+            logger.debug(
+                f"User {user_information['user_id']} is in tenant {user_information['tenant_id']} not in {tenant_id}")
             await turn_context.send_activity("Sorry, I can only talk to people in the same tenant.")
         else:
-            input_text = turn_context.activity.text + "\n\n metadata:\n" + str(input_text_metadata)
-            logging.debug(f"Session ID: {session_id}")
-            logging.debug(f"User ID: {user_id}")
-            logging.debug(f"OpenAI prompt: {input_text}")
+            user_input_text = turn_context.activity.text
+            user_input_text_with_metada = user_input_text + "\n\n metadata:\n" + str(input_text_metadata)
+            logger.debug(f"User input text: {user_input_text_with_metada}",
+                         extra={"input_text": user_input_text})
 
             # Set Callback Handler
             cb_handler = BotServiceCallbackHandler(turn_context)
@@ -159,7 +169,7 @@ class MyBot(ActivityHandler):
                 cosmos_container=os.environ['AZURE_COSMOSDB_CONTAINER_NAME'],
                 connection_string=os.environ['AZURE_COMOSDB_CONNECTION_STRING'],
                 session_id=session_id,
-                user_id=user_id
+                user_id=user_information["user_id"]
             )
             cosmos.prepare_cosmos()
             memory = ConversationBufferWindowMemory(memory_key="chat_history", input_key="question", return_messages=True,
@@ -170,25 +180,27 @@ class MyBot(ActivityHandler):
             # get user Sharepoint site list
             vector_indexes = [os.environ["AZURE_SEARCH_INDEX"]]
             similarity_k = 3  # top results from multi-vector-index similarity search
-            if user_aad_id and enable_site_id:
-                site_list = get_user_site_list(user_aad_id)
+            if (user_information["user_aad_id"] != "" and user_information != None) and enable_site_id:
+                site_list = get_user_site_list(user_information["user_aad_id"])
                 site_id_list = extract_site_list_id(site_list)
-                logging.debug(f"User site list: {site_id_list}")
-                logging.info("Searching documents in user's site list")
+                logger.debug(f"User site list: {site_id_list}")
+                logger.info("Searching documents in user's site list")
                 ordered_results = get_search_results(turn_context.activity.text,
                                                      vector_indexes,
                                                      sas_token=os.environ.get("BLOB_SAS_TOKEN"),
                                                      vector_search=True,
                                                      similarity_k=similarity_k,
                                                      query_vector=embedder.embed_query(turn_context.activity.text),
-                                                     site_ids=site_id_list)
+                                                     site_ids=site_id_list,
+                                                     enable_site_id=enable_site_id)
             else:
                 ordered_results = get_search_results(turn_context.activity.text,
                                                      vector_indexes,
                                                      sas_token=os.environ.get("BLOB_SAS_TOKEN"),
                                                      vector_search=True,
                                                      similarity_k=similarity_k,
-                                                     query_vector=embedder.embed_query(turn_context.activity.text))
+                                                     query_vector=embedder.embed_query(turn_context.activity.text),
+                                                     enable_site_id=enable_site_id)
 
             top_docs = []
             for key, value in ordered_results.items():
@@ -196,26 +208,33 @@ class MyBot(ActivityHandler):
                 top_docs.append(
                     Document(page_content=value["chunk"], metadata={"source": location + os.environ['BLOB_SAS_TOKEN']}))
 
-            await turn_context.send_activity(Activity(type=ActivityTypes.typing))
-
             # Please note below that running a non-async function like run_agent in a separate thread won't make it truly asynchronous. It allows the function to be called without blocking the event loop, but it may still have synchronous behavior internally.
-            answer_started = time.time()
-            loop = asyncio.get_event_loop()
-            logging.info("Getting answer from OpenAI")
-            answer = await loop.run_in_executor(ThreadPoolExecutor(),
-                                                get_answer_customized,
-                                                llm,
-                                                top_docs,
-                                                input_text,
-                                                answer_language,
-                                                "gpt-35-turbo-16k",  # TODO: find a way to set this dynamically
-                                                completion_tokens,
-                                                memory,
-                                                None)
-            answer_ended = time.time()
-            logging.debug(f"Took: {answer_ended - answer_started}s to answer")
-            logging.debug(f"OpenAI answer: {answer}")
-            logging.info(
-                "---------------------------------------------- TURN ENDS ----------------------------------------------")
-
+            # answer_started = time.time()
+            # send type acitivities so user awares that the message is being processed
+            await turn_context.send_activity(Activity(type=ActivityTypes.typing))
+            # loop = asyncio.get_event_loop()
+            logger.info("Getting answer from OpenAI")
+            # answer = await loop.run_in_executor(ThreadPoolExecutor(),
+            #                                     get_answer_customized,
+            #                                     llm,
+            #                                     top_docs,
+            #                                     user_input_text_with_metada,
+            #                                     answer_language,
+            #                                     "gpt-35-turbo-16k",  # TODO: find a way to set this dynamically
+            #                                     completion_tokens,
+            #                                     memory,
+            #                                     None)
+            answer = get_answer_customized(llm, top_docs, user_input_text_with_metada,
+                                           answer_language, "gpt-35-turbo-16k", completion_tokens, memory, None)
             await turn_context.send_activity(answer["output_text"])
+
+            # calculate turn duration
+            print("--- TURN ENDS ---")
+            turn_end_time = time.time()
+            turn_duration = turn_end_time - turn_start_time
+            turn_duration_data = {
+                "duration": turn_duration,
+                "start_time": turn_start_time,
+                "end_time": turn_end_time
+            }
+            logger.debug(f"turn duration: {turn_duration_data}", extra=turn_duration_data)
