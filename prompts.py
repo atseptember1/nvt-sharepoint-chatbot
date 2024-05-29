@@ -143,7 +143,7 @@ Here is the human's input (remember to respond with a markdown code snippet of a
 {{{{input}}}}"""
 
 
-COMBINE_CHAT_PROMPT_TEMPLATE = CUSTOM_CHATBOT_PREFIX +  """
+COMBINE_CHAT_PROMPT_TEMPLATE = CUSTOM_CHATBOT_PREFIX + """
 
 ## On your ability to answer question based on fetched documents (sources):
 - You should always leverage the fetched documents (sources) when the user is seeking information or whenever fetched documents (sources) could be potentially helpful, regardless of your internal knowledge or information.
@@ -154,8 +154,7 @@ COMBINE_CHAT_PROMPT_TEMPLATE = CUSTOM_CHATBOT_PREFIX +  """
 - You can leverage past responses and fetched documents for generating relevant and interesting suggestions for the next user turn.
 
 ## These are examples of how you must provide the answer:
-
---> Beginning of examples
+```
 =========
 QUESTION: Which state/country's law governs the interpretation of the contract?
 =========
@@ -189,8 +188,7 @@ Content: More support for patients and families. \n\nTo get there, I call on Con
 Source: https://uuu.com/article15.pdf?s=kjsdhfd&category=c&sort=asc&page=2
 =========
 FINAL ANSWER IN English: The president did not mention Michael Jackson.
-
-<-- End of examples
+```
 
 Given the following: 
 - a chat history, and a question from the Human
@@ -203,8 +201,8 @@ Instructions:
 - Reference (source) document's url can include query parameters, for example: "https://example.com/search?query=apple&category=fruits&sort=asc&page=1". On these cases, **you must** include que query references on the document url, using this html format: <sup><a href="url?query_parameters" target="_blank">[number]</a></sup>.
 - **You can only answer the question from information contained in the extracted parts below**, DO NOT use your prior knowledge.
 - Never provide an answer without references.
-- If you don't know the answer, just say that you don't know. Don't try to make up an answer.
-- Respond in {language}.
+- If you don't know the answer, just say that "I don't know". Don't try to make up an answer.
+- MUST Respond in {language}.
 
 Chat History:
 
@@ -232,7 +230,7 @@ DETECT_LANGUAGE_TEMPLATE = (
 )
 
 DETECT_LANGUAGE_PROMPT = PromptTemplate(
-    input_variables=["text"], 
+    input_variables=["text"],
     template=DETECT_LANGUAGE_TEMPLATE,
 )
 
@@ -290,7 +288,7 @@ Only use the following tables:
 Question: {input}"""
 
 MSSQL_PROMPT = PromptTemplate(
-    input_variables=["input", "table_info", "top_k"], 
+    input_variables=["input", "table_info", "top_k"],
     template=MSSQL_PROMPT
 )
 
@@ -366,12 +364,12 @@ CSV_PROMPT_SUFFIX = """
 """
 
 
-CHATGPT_PROMPT_TEMPLATE =  CUSTOM_CHATBOT_PREFIX +  """
+CHATGPT_PROMPT_TEMPLATE = CUSTOM_CHATBOT_PREFIX + """
 Human: {human_input}
 AI:"""
 
 CHATGPT_PROMPT = PromptTemplate(
-    input_variables=["human_input"], 
+    input_variables=["human_input"],
     template=CHATGPT_PROMPT_TEMPLATE
 )
 

@@ -46,10 +46,10 @@ enable_site_id = os.environ.get("ENABLE_SITE_ID")
 logger.debug(f"ENABLE_SITE_ID is set to: {str(enable_site_id)}")
 if enable_site_id.lower() == "true":
     enable_site_id = True
-if enable_site_id is None or enable_site_id.lower() == "":
+elif enable_site_id is None or enable_site_id.lower() == "":
     logger.debug("ENABLE_SITE_ID is not set, defaulting to True")
     enable_site_id = True
-else:
+elif enable_site_id.lower() == "false":
     enable_site_id = False
 
 
