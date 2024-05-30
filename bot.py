@@ -116,11 +116,15 @@ class MyBot(ActivityHandler):
 
         # Extract info from TurnContext - You can change this to whatever , this is just one option
         session_id = turn_context.activity.conversation.id
-        try:
-            user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
-        except KeyError as kerr:
-            logger.warning(f"user_tenant_id not found in channel_data: {kerr}")
+        # try:
+        #     user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
+        # except KeyError as kerr:
+        #     logger.warning(f"user_tenant_id not found in channel_data: {kerr}")
+        #     user_tenant_id = ""
+        if not turn_context.activity.channel_data.get("tenant"):
             user_tenant_id = ""
+        else:
+            user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
         user_aad_id = turn_context.activity.from_property.aad_object_id
         if user_aad_id is None:
             user_aad_id = ""
