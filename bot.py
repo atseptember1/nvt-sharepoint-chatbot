@@ -42,8 +42,10 @@ tenant_id = os.environ.get("AZURE_TENANT_ID")
 completion_tokens = int(os.environ.get("AZURE_OPENAI_COMPLETION_TOKEN"))
 answer_language = os.environ.get("ANSWER_LANGUAGE")
 
+# Env variables needed by the bot
 enable_site_id = os.environ.get("ENABLE_SITE_ID")
 logger.debug(f"ENABLE_SITE_ID is set to: {str(enable_site_id)}")
+# Set enable_site_id to True if not set
 if enable_site_id.lower() == "true":
     enable_site_id = True
 elif enable_site_id is None or enable_site_id.lower() == "":
@@ -114,13 +116,7 @@ class MyBot(ActivityHandler):
         turn_start_time = time.time()
         print("--- TURN BEGINNS ---")
 
-        # Extract info from TurnContext - You can change this to whatever , this is just one option
-        session_id = turn_context.activity.conversation.id
-        # try:
-        #     user_tenant_id = turn_context.activity.channel_data["tenant"]["id"]
-        # except KeyError as kerr:
-        #     logger.warning(f"user_tenant_id not found in channel_data: {kerr}")
-        #     user_tenant_id = ""
+        # Get the user's tenant id and AAD id
         if not turn_context.activity.channel_data.get("tenant"):
             user_tenant_id = ""
         else:
@@ -135,6 +131,7 @@ class MyBot(ActivityHandler):
         }
         logger.debug(f"User AAD information: {user_information}", extra=user_information)
 
+        # Extract metadata from user input
         input_text_metadata = dict()
         try:
             input_text_metadata["local_timestamp"] = turn_context.activity.local_timestamp.strftime(
@@ -144,6 +141,7 @@ class MyBot(ActivityHandler):
         except Exception as err:
             logger.error(err)
 
+        # Check if user is in the same tenant
         if user_tenant_id != tenant_id and tenant_id is not None:
             logger.debug(
                 f"User {user_information['user_id']} is in tenant {user_information['tenant_id']} not in {tenant_id}")
@@ -167,6 +165,7 @@ class MyBot(ActivityHandler):
             embedder = self.embed_llms[0]  # TODO: this should utilize fallback for AzureOpenAIEmbeddings
 
             # Set brain Agent with persisten memory in CosmosDB
+            session_id = turn_context.activity.conversation.id
             cosmos = CosmosDBChatMessageHistory(
                 cosmos_endpoint=os.environ['AZURE_COSMOSDB_ENDPOINT'],
                 cosmos_database=os.environ['AZURE_COSMOSDB_NAME'],
@@ -212,22 +211,9 @@ class MyBot(ActivityHandler):
                 top_docs.append(
                     Document(page_content=value["chunk"], metadata={"source": location + os.environ['BLOB_SAS_TOKEN']}))
 
-            # Please note below that running a non-async function like run_agent in a separate thread won't make it truly asynchronous. It allows the function to be called without blocking the event loop, but it may still have synchronous behavior internally.
-            # answer_started = time.time()
             # send type acitivities so user awares that the message is being processed
             await turn_context.send_activity(Activity(type=ActivityTypes.typing))
-            # loop = asyncio.get_event_loop()
             logger.info("Getting answer from OpenAI")
-            # answer = await loop.run_in_executor(ThreadPoolExecutor(),
-            #                                     get_answer_customized,
-            #                                     llm,
-            #                                     top_docs,
-            #                                     user_input_text_with_metada,
-            #                                     answer_language,
-            #                                     "gpt-35-turbo-16k",  # TODO: find a way to set this dynamically
-            #                                     completion_tokens,
-            #                                     memory,
-            #                                     None)
             answer = get_answer_customized(llm, top_docs, user_input_text_with_metada,
                                            answer_language, "gpt-35-turbo-16k", completion_tokens, memory, None)
             await turn_context.send_activity(answer["output_text"])

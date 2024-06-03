@@ -16,6 +16,41 @@
         }
       },
       "source": "chat.jinja2"
+    },
+    "python_node_4f93.py": {
+      "type": "python",
+      "inputs": {
+        "user_input": {
+          "type": [
+            "string"
+          ]
+        },
+        "docs": {
+          "type": [
+            "object"
+          ]
+        }
+      },
+      "source": "python_node_4f93.py",
+      "function": "execute_chain"
+    },
+    "ai_search.py": {
+      "type": "python",
+      "inputs": {
+        "query_text": {
+          "type": [
+            "string"
+          ]
+        },
+        "k": {
+          "type": [
+            "int"
+          ],
+          "default": "3"
+        }
+      },
+      "source": "ai_search.py",
+      "function": "ai_search"
     }
   }
 }

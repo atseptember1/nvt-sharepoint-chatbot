@@ -2,29 +2,26 @@ $schema: https://azuremlschemas.azureedge.net/promptflow/latest/Flow.schema.json
 environment:
   python_requirements_txt: requirements.txt
 inputs:
-  chat_history:
-    type: list
-    is_chat_history: true
-    default: []
   question:
     type: string
-    is_chat_input: true
+    default: làm thế nào để giảm trừ của bảo hiểm vỡ màn hình điện thoại
 outputs:
   answer:
     type: string
-    reference: ${chat.output}
-    is_chat_output: true
+    reference: ${execute_chain.output}
 nodes:
-- name: chat
-  type: llm
+- name: execute_chain
+  type: python
   source:
     type: code
-    path: chat.jinja2
+    path: python_node_4f93.py
   inputs:
-    deployment_name: gpt-35-turbo
-    max_tokens: "256"
-    temperature: "0.7"
-    chat_history: ${inputs.chat_history}
-    question: ${inputs.question}
-  connection: open_ai_connection
-  api: chat
+    user_input: ${inputs.question}
+    docs: ${ai_search.output}
+- name: ai_search
+  type: python
+  source:
+    type: code
+    path: ai_search.py
+  inputs:
+    query_text: ${inputs.question}
