@@ -5,19 +5,19 @@ import asyncio
 import time
 import logging
 import json
+import redis
 from concurrent.futures import ThreadPoolExecutor
 
-from langchain.chat_models.azure_openai import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI
 from langchain.memory import ConversationBufferWindowMemory
-from langchain.memory import CosmosDBChatMessageHistory
+from langchain_community.chat_message_histories import CosmosDBChatMessageHistory
 from typing import Any, Dict, List, Optional, Union
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.callbacks.manager import CallbackManager
 from langchain.schema import AgentAction, AgentFinish, LLMResult
-from langchain.embeddings.azure_openai import AzureOpenAIEmbeddings
+from langchain_openai import AzureOpenAIEmbeddings
 
 # custom libraries that we will use later in the app
-from utils import DocSearchTool, CSVTabularTool, SQLDbTool, ChatGPTTool, BingSearchTool, run_agent
 from prompts import *
 
 from botbuilder.core import ActivityHandler, TurnContext
@@ -54,6 +54,7 @@ elif enable_site_id is None or enable_site_id.lower() == "":
 elif enable_site_id.lower() == "false":
     enable_site_id = False
 
+user_sharepoint_cache = SharePointCache(os.environ.get("SHAREPOINT_SITE_CACHE_PERIOD"), os.environ.get("REDIS_HOST"), os.environ.get("REDIS_PORT"))
 
 # Callback hanlder used for the bot service to inform the client of the thought process before the final response
 class BotServiceCallbackHandler(BaseCallbackHandler):
@@ -87,7 +88,7 @@ class MyBot(ActivityHandler):
                 if resource["model_name"].startswith("gpt"):
                     self.llms_preconf.append(AzureChatOpenAI(
                         openai_api_type="azure",
-                        openai_api_base=resource["endpoint"],
+                        azure_endpoint=resource["endpoint"],
                         openai_api_key=resource["key"],
                         openai_api_version=aoai_api_version,
                         deployment_name=resource["deployment_name"],
@@ -97,7 +98,7 @@ class MyBot(ActivityHandler):
                 if resource["model_name"] == "embed":
                     self.embed_llms.append(AzureOpenAIEmbeddings(
                         openai_api_type="azure",
-                        openai_api_base=resource["endpoint"],
+                        azure_endpoint=resource["endpoint"],
                         openai_api_key=resource["key"],
                         openai_api_version=aoai_api_version,
                         deployment=resource["deployment_name"],
@@ -114,7 +115,7 @@ class MyBot(ActivityHandler):
     # See https://aka.ms/about-bot-activity-message to learn more about the message and other activity types.
     async def on_message_activity(self, turn_context: TurnContext):
         turn_start_time = time.time()
-        print("--- TURN BEGINNS ---")
+        logger.info("--- TURN BEGINNS ---")
 
         # Get the user's tenant id and AAD id
         if not turn_context.activity.channel_data.get("tenant"):
@@ -129,7 +130,7 @@ class MyBot(ActivityHandler):
             "user_id": turn_context.activity.from_property.id + "-" + turn_context.activity.channel_id,
             "tenant_id": user_tenant_id
         }
-        logger.debug(f"User AAD information: {user_information}", extra=user_information)
+        logger.info(f"User AAD information: {user_information}", extra=user_information)
 
         # Extract metadata from user input
         input_text_metadata = dict()
@@ -166,6 +167,9 @@ class MyBot(ActivityHandler):
 
             # Set brain Agent with persisten memory in CosmosDB
             session_id = turn_context.activity.conversation.id
+
+            logger.info(f"Session ID: {session_id}")
+
             cosmos = CosmosDBChatMessageHistory(
                 cosmos_endpoint=os.environ['AZURE_COSMOSDB_ENDPOINT'],
                 cosmos_database=os.environ['AZURE_COSMOSDB_NAME'],
@@ -183,8 +187,22 @@ class MyBot(ActivityHandler):
             # get user Sharepoint site list
             vector_indexes = [os.environ["AZURE_SEARCH_INDEX"]]
             similarity_k = 3  # top results from multi-vector-index similarity search
+
+            await turn_context.send_activity(Activity(type=ActivityTypes.typing))
+
             if (user_information["user_aad_id"] != "" and user_information != None) and enable_site_id:
-                site_list = get_user_site_list(user_information["user_aad_id"])
+                
+                user_sharepoint_sites_from_cache = user_sharepoint_cache.get_key(user_information["user_aad_id"])
+                site_list = None
+                
+                if user_sharepoint_sites_from_cache == None:
+                    logger.info("[DEBUG CACHE] CACHE EXPIRED OR NOT EXISTS - Get user sites permission from API")
+                    site_list = get_user_site_list(user_information["user_aad_id"])
+                    user_sharepoint_cache.set_key(user_information["user_aad_id"], site_list)
+                else:
+                    logger.info("[DEBUG CACHE] CACHE HIT - Get user sites permission from CACHE")
+                    site_list = json.loads(user_sharepoint_sites_from_cache)
+                
                 site_id_list = extract_site_list_id(site_list)
                 logger.debug(f"User site list: {site_id_list}")
                 logger.info("Searching documents in user's site list")
@@ -212,14 +230,13 @@ class MyBot(ActivityHandler):
                     Document(page_content=value["chunk"], metadata={"source": location + os.environ['BLOB_SAS_TOKEN']}))
 
             # send type acitivities so user awares that the message is being processed
-            await turn_context.send_activity(Activity(type=ActivityTypes.typing))
             logger.info("Getting answer from OpenAI")
             answer = get_answer_customized(llm, top_docs, user_input_text_with_metada,
                                            answer_language, "gpt-35-turbo-16k", completion_tokens, memory, None)
             await turn_context.send_activity(answer["output_text"])
 
             # calculate turn duration
-            print("--- TURN ENDS ---")
+            logger.info("--- TURN ENDS ---")
             turn_end_time = time.time()
             turn_duration = turn_end_time - turn_start_time
             turn_duration_data = {
@@ -227,4 +244,4 @@ class MyBot(ActivityHandler):
                 "start_time": turn_start_time,
                 "end_time": turn_end_time
             }
-            logger.debug(f"turn duration: {turn_duration_data}", extra=turn_duration_data)
+            logger.info(f"turn duration: {turn_duration_data}", extra=turn_duration_data)

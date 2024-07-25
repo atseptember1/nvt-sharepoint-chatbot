@@ -17,7 +17,7 @@ from botbuilder.core import (
 from botbuilder.core.integration import aiohttp_error_middleware
 from botbuilder.schema import Activity, ActivityTypes
 
-from azure.monitor.opentelemetry import configure_azure_monitor
+# from azure.monitor.opentelemetry import configure_azure_monitor
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -39,9 +39,9 @@ trace.set_tracer_provider(provider)
 # Creates a tracer from the global tracer provider
 tracer = trace.get_tracer(__name__)
 
-configure_azure_monitor(
-    instrumentation_key=os.environ.get("APPINSIGHTS_INSTRUMENTATIONKEY")
-)
+# configure_azure_monitor(
+#     instrumentation_key=os.environ.get("APPINSIGHTS_INSTRUMENTATIONKEY")
+# )
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler(sys.stdout)

@@ -10,6 +10,7 @@ import requests
 from collections import OrderedDict
 import base64
 
+import redis
 import docx2txt
 import tiktoken
 import html
@@ -20,33 +21,22 @@ from azure.core.credentials import AzureKeyCredential
 
 from azure.monitor.opentelemetry import configure_azure_monitor
 
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain.docstore.document import Document
-from langchain.llms import AzureOpenAI
-from langchain.chat_models import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import BaseOutputParser, OutputParserException
-from langchain.vectorstores import VectorStore
-from langchain.vectorstores.faiss import FAISS
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
 from langchain_experimental.agents import create_csv_agent
 from langchain.chains.question_answering import load_qa_chain
 from langchain.chains.qa_with_sources import load_qa_with_sources_chain
-from langchain.chains import ConversationalRetrievalChain
 from langchain.chains.conversational_retrieval.prompts import CONDENSE_QUESTION_PROMPT
-from langchain.tools import BaseTool
 from langchain.prompts import PromptTemplate
 # from openai.error import AuthenticationError
 from langchain.docstore.document import Document
 from pypdf import PdfReader
-from sqlalchemy.engine.url import URL
-from langchain.sql_database import SQLDatabase
 from langchain.agents import AgentExecutor, initialize_agent, AgentType
-from langchain.tools import BaseTool
-from langchain.utilities import BingSearchAPIWrapper
-from langchain.agents import create_sql_agent
-from langchain.agents.agent_toolkits import SQLDatabaseToolkit
 from langchain.callbacks.base import BaseCallbackManager
 
 logger = logging.getLogger(__name__)
@@ -64,6 +54,15 @@ except Exception as e:
                          CSV_PROMPT_PREFIX, CSV_PROMPT_SUFFIX, MSSQL_PROMPT, MSSQL_AGENT_PREFIX,
                          MSSQL_AGENT_FORMAT_INSTRUCTIONS, CHATGPT_PROMPT, BING_PROMPT_PREFIX, DOCSEARCH_PROMPT_PREFIX)
 
+
+class SharePointCache:
+   def __init__(self, expiration_time_in_s, host, port=6379):
+      self.time_to_expire_s=expiration_time_in_s
+      self.client = redis.Redis(host=host, port=6379)
+   def set_key(self, key, value):
+      self.client.set(key, json.dumps(value), ex=self.time_to_expire_s)
+   def get_key(self, key):
+      return self.client.get(key)
 
 def text_to_base64(text):
     # Convert text to bytes using UTF-8 encoding
@@ -216,33 +215,6 @@ def text_to_docs(text: List[str]) -> List[Document]:
             doc.metadata["source"] = f"{doc.metadata['page']}-{doc.metadata['chunk']}"
             doc_chunks.append(doc)
     return doc_chunks
-
-
-def embed_docs_faiss(docs: List[Document], chunks_limit: int = 100, verbose: bool = False) -> VectorStore:
-    """Embeds a list of Documents and returns a FAISS index"""
-
-    # Select the Embedder model'
-    if verbose:
-        print("Number of chunks:", len(docs))
-    embedder = OpenAIEmbeddings(deployment="text-embedding-ada-002", chunk_size=1)
-
-    if len(docs) > chunks_limit:
-        docs = docs[:chunks_limit]
-        if verbose:
-            print("Truncated Number of chunks:", len(docs))
-
-    index = FAISS.from_documents(docs, embedder)
-
-    return index
-
-
-def search_docs_faiss(index: VectorStore, query: str, k: int = 2) -> List[Document]:
-    """Searches a FAISS index for similar chunks to the query
-    and returns a list of Documents."""
-
-    # Search for similar chunks
-    docs = index.similarity_search(query, k)
-    return docs
 
 
 def wrap_text_in_html(text: List[str]) -> str:
@@ -563,277 +535,6 @@ def run_agent(question: str, agent_chain: AgentExecutor) -> str:
             continue
 
     return response
-
-
-######## TOOL CLASSES #####################################
-###########################################################
-
-class DocSearchResults(BaseTool):
-    """Tool for Azure Search results"""
-
-    name = "search knowledge base"
-    description = "search documents in search engine"
-
-    indexes: List[str] = []
-    vector_only_indexes: List[str] = []
-    k: int = 10
-    reranker_th: int = 1
-    similarity_k: int = 3
-    sas_token: str = ""
-    embedding_model: str = "text-embedding-ada-002"
-
-    def _run(self, query: str) -> str:
-
-        embedder = OpenAIEmbeddings(deployment=self.embedding_model, chunk_size=1)
-
-        if self.indexes:
-            # Search in text-based indexes first and update corresponding vector indexes
-            ordered_results = get_search_results(query, indexes=self.indexes, k=self.k,
-                                                 reranker_threshold=self.reranker_th,
-                                                 vector_search=False)
-
-            update_vector_indexes(ordered_search_results=ordered_results, embedder=embedder)
-
-            vector_indexes = [index + "-vector" for index in self.indexes]
-            if self.vector_only_indexes:
-                vector_indexes = vector_indexes + self.vector_only_indexes
-
-        if self.vector_only_indexes and not self.indexes:
-            vector_indexes = self.vector_only_indexes
-
-        if self.verbose:
-            print("Vector Indexes:", vector_indexes)
-
-        # Search in all vector-based indexes available
-        ordered_results = get_search_results(query, indexes=vector_indexes, k=self.k,
-                                             reranker_threshold=self.reranker_th,
-                                             vector_search=True,
-                                             similarity_k=self.similarity_k,
-                                             query_vector=embedder.embed_query(query),
-                                             sas_token=self.sas_token,
-                                             )
-
-        return ordered_results
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("DocSearchResults does not support async")
-
-
-class DocSearchTool(BaseTool):
-    """Tool for Azure GPT Smart Search Engine"""
-
-    name = "@docsearch"
-    description = "useful when the questions includes the term: @docsearch.\n"
-
-    llm: AzureChatOpenAI
-    indexes: List[str] = []
-    vector_only_indexes: List[str] = []
-    k: int = 10
-    reranker_th: int = 1
-    similarity_k: int = 3
-    sas_token: str = ""
-    embedding_model: str = "text-embedding-ada-002"
-
-    def _run(self, tool_input: Union[str, Dict], ) -> str:
-        try:
-            tools = [DocSearchResults(indexes=self.indexes, vector_only_indexes=self.vector_only_indexes,
-                                      k=self.k, reranker_th=self.reranker_th, similarity_k=self.similarity_k,
-                                      sas_token=self.sas_token, embedding_model=self.embedding_model)]
-
-            parsed_input = self._parse_input(tool_input)
-
-            agent_executor = initialize_agent(tools=tools,
-                                              llm=self.llm,
-                                              agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                                              agent_kwargs={'prefix': DOCSEARCH_PROMPT_PREFIX},
-                                              callback_manager=self.callbacks,
-                                              verbose=self.verbose)
-
-            for i in range(2):
-                try:
-                    response = run_agent(parsed_input, agent_executor)
-                    break
-                except Exception as e:
-                    response = str(e)
-                    continue
-
-            return response
-
-        except Exception as e:
-            print(e)
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("DocSearchTool does not support async")
-
-
-class CSVTabularTool(BaseTool):
-    """Tool CSV agent"""
-
-    name = "@csvfile"
-    description = "useful when the questions includes the term: @csvfile.\n"
-
-    path: str
-    llm: AzureChatOpenAI
-
-    def _run(self, query: str) -> str:
-
-        try:
-            agent = create_csv_agent(self.llm, self.path, verbose=self.verbose, callback_manager=self.callbacks)
-            for i in range(5):
-                try:
-                    response = agent.run(CSV_PROMPT_PREFIX + query + CSV_PROMPT_SUFFIX)
-                    break
-                except:
-                    response = "Error too many failed retries"
-                    continue
-
-            return response
-        except Exception as e:
-            print(e)
-            response = e
-            return response
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("CSVTabularTool does not support async")
-
-
-class SQLDbTool(BaseTool):
-    """Tool SQLDB Agent"""
-
-    name = "@sqlsearch"
-    description = "useful when the questions includes the term: @sqlsearch.\n"
-
-    llm: AzureChatOpenAI
-    k: int = 30
-
-    def _run(self, query: str) -> str:
-        db_config = {
-            'drivername': 'mssql+pyodbc',
-            'username': os.environ["SQL_SERVER_USERNAME"] + '@' + os.environ["SQL_SERVER_NAME"],
-            'password': os.environ["SQL_SERVER_PASSWORD"],
-            'host': os.environ["SQL_SERVER_NAME"],
-            'port': 1433,
-            'database': os.environ["SQL_SERVER_DATABASE"],
-            'query': {'driver': 'ODBC Driver 17 for SQL Server'}
-        }
-
-        db_url = URL.create(**db_config)
-        db = SQLDatabase.from_uri(db_url)
-        toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
-        agent_executor = create_sql_agent(
-            prefix=MSSQL_AGENT_PREFIX,
-            format_instructions=MSSQL_AGENT_FORMAT_INSTRUCTIONS,
-            llm=self.llm,
-            toolkit=toolkit,
-            callback_manager=self.callbacks,
-            top_k=self.k,
-            verbose=self.verbose
-        )
-
-        for i in range(2):
-            try:
-                response = agent_executor.run(query)
-                break
-            except Exception as e:
-                response = str(e)
-                continue
-
-        return response
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("SQLDbTool does not support async")
-
-
-class ChatGPTTool(BaseTool):
-    """Tool for a ChatGPT clone"""
-
-    name = "@chatgpt"
-    description = "useful when the questions includes the term: @chatgpt.\n"
-
-    llm: AzureChatOpenAI
-
-    def _run(self, query: str) -> str:
-        try:
-            chatgpt_chain = LLMChain(
-                llm=self.llm,
-                prompt=CHATGPT_PROMPT,
-                callback_manager=self.callbacks,
-                verbose=self.verbose
-            )
-
-            response = chatgpt_chain.run(query)
-
-            return response
-        except Exception as e:
-            print(e)
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("ChatGPTTool does not support async")
-
-
-class BingSearchResults(BaseTool):
-    """Tool for a Bing Search Wrapper"""
-
-    name = "@bing"
-    description = "useful when the questions includes the term: @bing.\n"
-
-    k: int = 5
-
-    def _run(self, query: str) -> str:
-        bing = BingSearchAPIWrapper(k=self.k)
-        try:
-            return bing.results(query, num_results=self.k)
-        except:
-            return "No Results Found"
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("BingSearchResults does not support async")
-
-
-class BingSearchTool(BaseTool):
-    """Tool for a Bing Search Wrapper"""
-
-    name = "@bing"
-    description = "useful when the questions includes the term: @bing.\n"
-
-    llm: AzureChatOpenAI
-    k: int = 5
-
-    def _run(self, tool_input: Union[str, Dict], ) -> str:
-        try:
-            tools = [BingSearchResults(k=self.k)]
-            parsed_input = self._parse_input(tool_input)
-
-            agent_executor = initialize_agent(tools=tools,
-                                              llm=self.llm,
-                                              agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-                                              agent_kwargs={'prefix': BING_PROMPT_PREFIX},
-                                              callback_manager=self.callbacks,
-                                              verbose=self.verbose)
-
-            for i in range(2):
-                try:
-                    response = run_agent(parsed_input, agent_executor)
-                    break
-                except Exception as e:
-                    response = str(e)
-                    continue
-
-            return response
-
-        except Exception as e:
-            print(e)
-
-    async def _arun(self, query: str) -> str:
-        """Use the tool asynchronously."""
-        raise NotImplementedError("BingSearchTool does not support async")
-
 
 def get_user_site_list(user_aad_id: str) -> List[dict]:
     payload = {
