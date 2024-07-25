@@ -1,0 +1,17 @@
+langchain
+langchain-experimental
+openai
+tiktoken
+docx2txt
+pillow
+pypdf
+tenacity
+sqlalchemy<2.0.0
+pyodbc
+tabulate
+azure-cosmos
+botbuilder-integration-aiohttp>=4.14.4
+python-dotenv
+azure-ai-formrecognizer
+azure-monitor-opentelemetry
+tiktoken
