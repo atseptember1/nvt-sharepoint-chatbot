@@ -1,0 +1,14 @@
+[
+  {
+    "endpoint": "https://nambeo-sharepoint-azureopenai.openai.azure.com/",
+    "key": "346e0f2b532942ee937cd3fed6095740",
+    "deployment_name": "text-embedding-ada-002",
+    "model_name": "embed"
+  },
+  {
+    "endpoint": "https://nambeo-sharepoint-azureopenai.openai.azure.com/",
+    "key": "346e0f2b532942ee937cd3fed6095740",
+    "deployment_name": "gpt-4o-global",
+    "model_name": "gpt-4o-global"
+  }
+]

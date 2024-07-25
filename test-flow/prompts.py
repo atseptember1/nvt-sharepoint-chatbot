@@ -67,7 +67,7 @@ FINAL ANSWER IN English: The president did not mention Michael Jackson.
 =========
 QUESTION: {question}
 =========
-{summaries}
+DOCUMENTS: {summaries}
 =========
 FINAL ANSWER IN {language}:"""
 

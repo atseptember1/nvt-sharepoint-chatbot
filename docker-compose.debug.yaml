@@ -1,0 +1,20 @@
+  # docker-compose.debug.yml
+  version: "3.9"
+
+  services:
+    web:
+      build:
+        context: .
+        dockerfile: ./Dockerfile
+    environment:
+      - 'AZURE_OPENAI_RESOURCES=[{"endpoint": "https://az-sg-openai-001.openai.azure.com/", "key": "facfe5bdbb2349c2947631404d453344", "deployment_name": "gpt-4", "model_name": "gpt-4"},{"endpoint": "https://az-sg-openai-002.openai.azure.com/", "key": "2e9e89ee8d2647ba993a19579ef6421b", "deployment_name": "gpt-4", "model_name": "gpt-4"},{"endpoint": "https://az-sg-openai-003.openai.azure.com/", "key": "7e69b6ddd5eb4e4ab4700ec57da1347b", "deployment_name": "gpt-4", "model_name": "gpt-4"},{"endpoint": "https://az-sg-openai-001.openai.azure.com/", "key": "facfe5bdbb2349c2947631404d453344", "deployment_name": "gpt-35-turbo-16k", "model_name": "gpt-35-turbo-16k"},{"endpoint": "https://az-sg-openai-002.openai.azure.com/", "key": "2e9e89ee8d2647ba993a19579ef6421b", "deployment_name": "gpt-35-turbo-16k", "model_name": "gpt-35-turbo-16k"},{"endpoint": "https://az-sg-openai-003.openai.azure.com/", "key": "7e69b6ddd5eb4e4ab4700ec57da1347b", "deployment_name": "gpt-35-turbo-16k", "model_name": "gpt-35-turbo-16k"},{"endpoint": "https://az-sg-openai-001.openai.azure.com/", "key": "facfe5bdbb2349c2947631404d453344", "deployment_name": "text-embedding-ada-002", "model_name": "embed"}]'
+    command:
+      - "sh"
+      - "-c"
+      - |
+        pip install debugpy -t /tmp \
+        && python /tmp/debugpy --wait-for-client --listen 0.0.0.0:5678 \
+        ./app.py
+    ports:
+      - 3978:3978
+      - 5678:5678

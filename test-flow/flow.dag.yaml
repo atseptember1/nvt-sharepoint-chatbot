@@ -1,0 +1,27 @@
+$schema: https://azuremlschemas.azureedge.net/promptflow/latest/Flow.schema.json
+environment:
+  python_requirements_txt: requirements.txt
+inputs:
+  question:
+    type: string
+    default: làm thế nào để giảm trừ của bảo hiểm vỡ màn hình điện thoại
+outputs:
+  answer:
+    type: string
+    reference: ${execute_chain.output}
+nodes:
+- name: execute_chain
+  type: python
+  source:
+    type: code
+    path: python_node_4f93.py
+  inputs:
+    user_input: ${inputs.question}
+    docs: ${ai_search.output}
+- name: ai_search
+  type: python
+  source:
+    type: code
+    path: ai_search.py
+  inputs:
+    query_text: ${inputs.question}
